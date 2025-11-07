@@ -135,177 +135,67 @@ def ensure_dir(d):
 
 def extract_and_save_images(annotations_data: Dict[str, Any], pdf_path: str) -> Dict[str, Any]:
     """
-    Extract base64 images from annotations and save them to files.
+    Extract base64 images from annotations (keep only base64, no file saving).
     
     Args:
         annotations_data: Dictionary containing bbox_annotations with image_base64 fields
-        pdf_path: Original PDF path for naming output directory
+        pdf_path: Original PDF path (unused, kept for compatibility)
         
     Returns:
-        Updated annotations_data with image_file_path added to each annotation
+        Updated annotations_data (base64 images are already in place)
     """
-    base_name = os.path.splitext(os.path.basename(pdf_path))[0]
-    images_dir = os.path.join(OUTPUT_DIR, f"{base_name}_images")
-    ensure_dir(images_dir)
+    # Count images for logging
+    image_count = 0
     
-    saved_images = []
-    image_counter = 0
-    
-    # Extract images from bbox_annotations
+    # Count images from bbox_annotations
     bbox_annotations = annotations_data.get("bbox_annotations", [])
-    
-    for idx, bbox_ann in enumerate(bbox_annotations):
-        image_base64 = None
-        
-        # Try to get image_base64 from various possible locations
+    for bbox_ann in bbox_annotations:
         if isinstance(bbox_ann, dict):
-            image_base64 = bbox_ann.get('image_base64')
-        elif hasattr(bbox_ann, 'image_base64'):
-            image_base64 = bbox_ann.image_base64
-        
-        if image_base64:
-            try:
-                # Handle data URI format: "data:image/jpeg;base64,..."
-                if isinstance(image_base64, str):
-                    # Check if it's a data URI
-                    if image_base64.startswith('data:'):
-                        # Extract the base64 part after the comma
-                        match = re.match(r'data:image/(\w+);base64,(.+)', image_base64)
-                        if match:
-                            image_format = match.group(1)  # jpeg, png, etc.
-                            base64_data = match.group(2)
-                        else:
-                            # Fallback: try to extract after first comma
-                            parts = image_base64.split(',', 1)
-                            if len(parts) == 2:
-                                base64_data = parts[1]
-                                # Try to detect format from mime type
-                                if 'jpeg' in parts[0] or 'jpg' in parts[0]:
-                                    image_format = 'jpeg'
-                                elif 'png' in parts[0]:
-                                    image_format = 'png'
-                                else:
-                                    image_format = 'jpeg'  # default
-                            else:
-                                base64_data = image_base64
-                                image_format = 'jpeg'  # default
-                    else:
-                        # Assume it's already base64 without data URI prefix
-                        base64_data = image_base64
-                        image_format = 'jpeg'  # default
-                    
-                    # Decode base64
-                    image_bytes = base64.b64decode(base64_data)
-                    
-                    # Determine file extension
-                    ext = image_format if image_format in ['jpeg', 'png', 'gif', 'webp'] else 'jpg'
-                    if ext == 'jpeg':
-                        ext = 'jpg'
-                    
-                    # Generate filename
-                    image_counter += 1
-                    filename = f"img_{image_counter:03d}.{ext}"
-                    filepath = os.path.join(images_dir, filename)
-                    
-                    # Save image
-                    with open(filepath, 'wb') as f:
-                        f.write(image_bytes)
-                    
-                    # Update annotation with file path
-                    if isinstance(bbox_ann, dict):
-                        bbox_ann['image_file_path'] = filepath
-                        bbox_ann['image_filename'] = filename
-                    else:
-                        # If it's an object, try to set attribute
-                        try:
-                            bbox_ann.image_file_path = filepath
-                            bbox_ann.image_filename = filename
-                        except:
-                            pass
-                    
-                    saved_images.append({
-                        'index': idx,
-                        'filename': filename,
-                        'filepath': filepath,
-                        'size_bytes': len(image_bytes)
-                    })
-                    
-                    logger.info(f"Saved image {image_counter}: {filename} ({len(image_bytes) / 1024:.1f} KB)")
-                    
-            except Exception as e:
-                logger.warning(f"Failed to extract/save image from annotation {idx}: {e}")
+            if bbox_ann.get('image_base64'):
+                image_count += 1
+        elif hasattr(bbox_ann, 'image_base64') and bbox_ann.image_base64:
+            image_count += 1
     
-    # Also check pages for images (could be in 'images' or 'image_annotations')
+    # Count images from pages
     pages = annotations_data.get("pages", [])
-    for page_idx, page in enumerate(pages):
+    for page in pages:
         image_anns = []
         if isinstance(page, dict):
-            # Check both 'images' and 'image_annotations' fields
-            image_anns = page.get('images', [])
-            if not image_anns:
-                image_anns = page.get('image_annotations', [])
+            image_anns = page.get('images', []) or page.get('image_annotations', [])
         elif hasattr(page, 'images'):
             image_anns = page.images
         elif hasattr(page, 'image_annotations'):
             image_anns = page.image_annotations
-        else:
-            continue
         
         for img_ann in image_anns:
-            image_base64 = None
+            if isinstance(img_ann, dict) and img_ann.get('image_base64'):
+                image_count += 1
+            elif hasattr(img_ann, 'image_base64') and img_ann.image_base64:
+                image_count += 1
+    
+    logger.info(f"Found {image_count} images with base64 data (kept in JSON, no files saved)")
+    
+    # Remove any existing file path references
+    for bbox_ann in bbox_annotations:
+        if isinstance(bbox_ann, dict):
+            bbox_ann.pop('image_file_path', None)
+            bbox_ann.pop('image_filename', None)
+    
+    for page in pages:
+        image_anns = []
+        if isinstance(page, dict):
+            image_anns = page.get('images', []) or page.get('image_annotations', [])
+        elif hasattr(page, 'images'):
+            image_anns = page.images
+        elif hasattr(page, 'image_annotations'):
+            image_anns = page.image_annotations
+        
+        for img_ann in image_anns:
             if isinstance(img_ann, dict):
-                image_base64 = img_ann.get('image_base64')
-            elif hasattr(img_ann, 'image_base64'):
-                image_base64 = img_ann.image_base64
-            
-            if image_base64:
-                try:
-                    # Same extraction logic as above
-                    if isinstance(image_base64, str) and image_base64.startswith('data:'):
-                        match = re.match(r'data:image/(\w+);base64,(.+)', image_base64)
-                        if match:
-                            image_format = match.group(1)
-                            base64_data = match.group(2)
-                        else:
-                            parts = image_base64.split(',', 1)
-                            base64_data = parts[1] if len(parts) == 2 else image_base64
-                            image_format = 'jpeg'
-                    else:
-                        base64_data = image_base64
-                        image_format = 'jpeg'
-                    
-                    image_bytes = base64.b64decode(base64_data)
-                    ext = image_format if image_format in ['jpeg', 'png', 'gif', 'webp'] else 'jpg'
-                    if ext == 'jpeg':
-                        ext = 'jpg'
-                    
-                    image_counter += 1
-                    filename = f"img_{image_counter:03d}.{ext}"
-                    filepath = os.path.join(images_dir, filename)
-                    
-                    with open(filepath, 'wb') as f:
-                        f.write(image_bytes)
-                    
-                    if isinstance(img_ann, dict):
-                        img_ann['image_file_path'] = filepath
-                        img_ann['image_filename'] = filename
-                    
-                    saved_images.append({
-                        'index': f"page_{page_idx}",
-                        'filename': filename,
-                        'filepath': filepath,
-                        'size_bytes': len(image_bytes)
-                    })
-                    
-                    logger.info(f"Saved image {image_counter} from page {page_idx}: {filename} ({len(image_bytes) / 1024:.1f} KB)")
-                    
-                except Exception as e:
-                    logger.warning(f"Failed to extract/save image from page {page_idx}: {e}")
+                img_ann.pop('image_file_path', None)
+                img_ann.pop('image_filename', None)
     
-    logger.info(f"Extracted and saved {len(saved_images)} images to {images_dir}")
-    annotations_data['extracted_images'] = saved_images
-    annotations_data['images_directory'] = images_dir
-    
+    # Don't add extracted_images or images_directory - we only use base64
     return annotations_data
 
 
@@ -663,13 +553,7 @@ def generate_viewer_html(json_filename: str, output_dir: str = OUTPUT_DIR) -> st
         // Already in data URI format (data:image/jpeg;base64,...)
         return img.image_base64;
       }
-      // Fallback to file path if base64 not available
-      if (img.image_file_path) {
-        const path = img.image_file_path.startsWith('output/') 
-          ? img.image_file_path.replace(/^output\\//, '') 
-          : img.image_file_path;
-        return encodeURI(path);
-      }
+      // Only base64 images are supported (no file paths)
       return null;
     }
 
@@ -759,8 +643,8 @@ def generate_viewer_html(json_filename: str, output_dir: str = OUTPUT_DIR) -> st
       const images = Array.isArray(page.images) ? page.images : [];
 
       // Use images in JSON order (ground truth) - don't sort!
-      // Prefer images with base64 data, fallback to file_path
-      const imagesInOrder = images.filter(img => img.image_base64 || img.image_file_path);
+      // Only use images with base64 data
+      const imagesInOrder = images.filter(img => img.image_base64);
 
       // Use Unicode private use area characters as placeholders (won't be escaped)
       const mathExpressions = [];
@@ -866,11 +750,6 @@ def generate_viewer_html(json_filename: str, output_dir: str = OUTPUT_DIR) -> st
         // Handle both base64 data URI and file path
         if (typeof pageImage === 'string' && pageImage.startsWith('data:')) {
           pageImg.src = pageImage;
-        } else if (typeof pageImage === 'string') {
-          // File path
-          pageImg.src = pageImage.startsWith('output/') 
-            ? pageImage.replace(/^output\\//, '') 
-            : pageImage;
         }
         pageImg.alt = `Page ${pageNumber} - Original PDF page`;
         pageImg.style.width = '100%';
@@ -1662,8 +1541,8 @@ def process_pdf(pdf_path: str, mistral_client: Optional[Mistral] = None) -> str:
     # Extract annotations in usable format
     annotations_data = extract_annotations(mistral_result)
     
-    # Extract and save images from base64 data
-    logger.info("Extracting and saving images from annotations...")
+    # Process images (keep only base64, no file saving)
+    logger.info("Processing images from annotations (base64 only)...")
     annotations_data = extract_and_save_images(annotations_data, pdf_path)
     
     # Create output structure
@@ -1673,9 +1552,7 @@ def process_pdf(pdf_path: str, mistral_client: Optional[Mistral] = None) -> str:
         "document_annotation": annotations_data["document_annotation"],
         "bbox_annotations": annotations_data["bbox_annotations"],
         "full_text": annotations_data["text"],
-        "pages": annotations_data["pages"],
-        "extracted_images": annotations_data.get("extracted_images", []),
-        "images_directory": annotations_data.get("images_directory", "")
+        "pages": annotations_data["pages"]
     }
     
     # Save results
