@@ -309,6 +309,664 @@ def extract_and_save_images(annotations_data: Dict[str, Any], pdf_path: str) -> 
     return annotations_data
 
 
+def add_page_images_to_json(json_path: str, pdf_path: str) -> bool:
+    """
+    Add full page images to annotation JSON file.
+    Extracts pages from PDF and adds them as base64 to the JSON.
+    
+    Args:
+        json_path: Path to annotation JSON file
+        pdf_path: Path to source PDF file
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    if not PDF2IMAGE_AVAILABLE:
+        logger.warning("pdf2image not available. Skipping page image extraction.")
+        return False
+    
+    if not os.path.exists(json_path):
+        logger.error(f"JSON file not found: {json_path}")
+        return False
+    
+    if not os.path.exists(pdf_path):
+        logger.error(f"PDF file not found: {pdf_path}")
+        return False
+    
+    try:
+        # Read JSON
+        with open(json_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        
+        # Extract page images from PDF
+        logger.info(f"Extracting page images from PDF: {pdf_path}")
+        images = convert_from_path(pdf_path, dpi=200)
+        base64_images = []
+        
+        for img in images:
+            # Convert PIL Image to base64
+            buffer = BytesIO()
+            img.save(buffer, format='JPEG', quality=85)
+            img_bytes = buffer.getvalue()
+            img_base64 = base64.b64encode(img_bytes).decode('utf-8')
+            base64_images.append(f"data:image/jpeg;base64,{img_base64}")
+        
+        logger.info(f"Extracted {len(base64_images)} page images")
+        
+        # Add page images to JSON
+        pages = data.get('pages', [])
+        if len(pages) != len(base64_images):
+            logger.warning(f"Page count mismatch. JSON has {len(pages)} pages, PDF has {len(base64_images)} pages")
+        
+        for i, page in enumerate(pages):
+            if i < len(base64_images):
+                page['page_image_base64'] = base64_images[i]
+                logger.info(f"Added page image to page {i+1}")
+            else:
+                logger.warning(f"No image available for page {i+1}")
+        
+        # Save updated JSON (overwrite original)
+        with open(json_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        
+        logger.info(f"Updated JSON with page images: {json_path}")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Failed to add page images: {e}")
+        return False
+
+
+def generate_viewer_html(json_filename: str, output_dir: str = OUTPUT_DIR) -> str:
+    """
+    Generate viewer.html file with the correct JSON filename.
+    
+    Args:
+        json_filename: Name of the JSON file (e.g., 'document_annotations.json')
+        output_dir: Directory where viewer.html will be saved
+        
+    Returns:
+        Path to generated viewer.html file
+    """
+    viewer_template = '''<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Document Viewer</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      font-family: "Inter", "Segoe UI", system-ui, sans-serif;
+      background-color: #f4f6f8;
+      color: #1f2933;
+    }
+
+    body {
+      margin: 0;
+      display: flex;
+      min-height: 100vh;
+      background-color: inherit;
+      color: inherit;
+    }
+
+    aside {
+      width: 220px;
+      flex-shrink: 0;
+      border-right: 1px solid rgba(31, 41, 51, 0.15);
+      background: #fff;
+      display: flex;
+      flex-direction: column;
+    }
+
+    aside h1 {
+      margin: 0;
+      padding: 18px;
+      font-size: 1.1rem;
+      font-weight: 600;
+      border-bottom: 1px solid rgba(31, 41, 51, 0.15);
+    }
+
+    #page-list {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      overflow-y: auto;
+    }
+
+    #page-list button {
+      all: unset;
+      display: block;
+      width: 100%;
+      padding: 14px 18px;
+      cursor: pointer;
+      transition: background 0.2s ease;
+    }
+
+    #page-list button:hover {
+      background: rgba(59, 130, 246, 0.08);
+    }
+
+    #page-list button.active {
+      background: rgba(59, 130, 246, 0.15);
+      border-left: 4px solid #3b82f6;
+      padding-left: 14px;
+      font-weight: 600;
+    }
+
+    main {
+      flex: 1;
+      padding: 32px 42px;
+      overflow-y: auto;
+      background: #f9fafb;
+    }
+
+    #page-header {
+      margin-bottom: 26px;
+      border-bottom: 1px solid rgba(31, 41, 51, 0.12);
+      padding-bottom: 16px;
+    }
+
+    #page-header h2 {
+      margin: 0;
+      font-size: 1.35rem;
+    }
+
+    #page-header .meta {
+      margin: 6px 0 0;
+      color: #6b7280;
+      font-size: 0.9rem;
+    }
+
+    #markdown {
+      line-height: 1.6;
+      font-size: 1rem;
+    }
+
+    /* Two-panel layout support */
+    .two-panel {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 24px;
+      margin: 24px 0;
+    }
+
+    .panel {
+      display: flex;
+      flex-direction: column;
+    }
+
+    @media (max-width: 1024px) {
+      .two-panel {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    #markdown h1 {
+      font-size: 1.6rem;
+      margin-top: 0;
+    }
+
+    #markdown h2 {
+      font-size: 1.3rem;
+    }
+
+    #markdown table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 18px 0;
+    }
+
+    #markdown table, #markdown th, #markdown td {
+      border: 1px solid rgba(31, 41, 51, 0.15);
+    }
+
+    #markdown th, #markdown td {
+      padding: 8px 10px;
+      text-align: left;
+    }
+
+    .inline-image {
+      margin: 24px 0;
+      background: #fff;
+      border-radius: 12px;
+      box-shadow: 0 8px 16px rgba(15, 23, 42, 0.08);
+      overflow: hidden;
+      border: 1px solid rgba(15, 23, 42, 0.08);
+      max-width: 100%;
+    }
+
+    .inline-image img {
+      display: block;
+      width: 100%;
+      height: auto;
+    }
+
+    .inline-image .image-meta {
+      padding: 14px 18px;
+    }
+
+    .inline-image .image-meta h3 {
+      margin: 0 0 10px;
+      font-size: 1.05rem;
+    }
+
+    .inline-image .image-meta p {
+      margin: 6px 0;
+      font-size: 0.95rem;
+      color: #4b5563;
+    }
+
+    .page-image-container {
+      margin-top: 48px;
+      padding-top: 32px;
+      border-top: 2px solid rgba(31, 41, 51, 0.15);
+    }
+
+    .page-image-container h3 {
+      margin: 0 0 16px;
+      font-size: 1.1rem;
+      color: #4b5563;
+      font-weight: 600;
+    }
+
+    .page-image-container img {
+      max-width: 100%;
+      height: auto;
+      border: 1px solid rgba(15, 23, 42, 0.1);
+      border-radius: 8px;
+      box-shadow: 0 4px 12px rgba(15, 23, 42, 0.1);
+      background: #fff;
+    }
+
+    .placeholder {
+      color: #6b7280;
+      font-style: italic;
+    }
+
+    @media (max-width: 820px) {
+      body {
+        flex-direction: column;
+      }
+
+      aside {
+        width: 100%;
+        border-right: none;
+        border-bottom: 1px solid rgba(31, 41, 51, 0.15);
+      }
+
+      #page-list {
+        display: flex;
+        overflow-x: auto;
+      }
+
+      #page-list button {
+        flex: 1;
+        text-align: center;
+        padding: 14px;
+      }
+
+      main {
+        padding: 24px 20px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <aside>
+    <h1>Pages</h1>
+    <ul id="page-list"></ul>
+  </aside>
+  <main>
+    <section id="page-header">
+      <h2>Select a page to preview</h2>
+      <p class="placeholder">Choose a page on the left to see its text and images.</p>
+    </section>
+    <article id="markdown"></article>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script src="https://polyfill.io/v3/polyfill.min.js?features=es6"></script>
+  <script>
+    window.MathJax = {
+      tex: {
+        inlineMath: [['$', '$'], ['\\\\(', '\\\\)']],
+        displayMath: [['$$', '$$'], ['\\\\[', '\\\\]']],
+        processEscapes: true,
+        processEnvironments: true,
+        packages: {'[+]': ['base', 'ams', 'newcommand', 'configmacros']}
+      },
+      options: {
+        skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code'],
+        ignoreHtmlClass: 'no-math'
+      },
+      loader: {
+        load: ['[tex]/ams', '[tex]/newcommand', '[tex]/configmacros']
+      }
+    };
+  </script>
+  <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+  <script>
+    const DATA_FILE = '{json_filename}';
+    const dataUrl = encodeURI(DATA_FILE);
+
+    const pageListEl = document.getElementById('page-list');
+    const markdownEl = document.getElementById('markdown');
+    const headerEl = document.getElementById('page-header');
+
+    let currentIndex = -1;
+    let pages = [];
+
+    function getImageDataUri(img) {
+      // Get base64 image data from JSON
+      if (img.image_base64) {
+        // Already in data URI format (data:image/jpeg;base64,...)
+        return img.image_base64;
+      }
+      // Fallback to file path if base64 not available
+      if (img.image_file_path) {
+        const path = img.image_file_path.startsWith('output/') 
+          ? img.image_file_path.replace(/^output\\//, '') 
+          : img.image_file_path;
+        return encodeURI(path);
+      }
+      return null;
+    }
+
+    function derivePageTitle(page, fallback) {
+      if (page.title) return page.title;
+      const md = page.markdown || '';
+      const headingMatch = md.match(/^\\s*#{1,3}\\s+(.+)/m);
+      if (headingMatch) {
+        return headingMatch[1].trim();
+      }
+      return fallback;
+    }
+
+    function createImageCard(img, idx) {
+      // Get image data URI from base64 (preferred) or file path (fallback)
+      const imageDataUri = getImageDataUri(img);
+      if (!imageDataUri) return null;
+
+      // Parse annotation
+      let annotation = {};
+      if (typeof img.image_annotation === 'string') {
+        try {
+          annotation = JSON.parse(img.image_annotation);
+        } catch (err) {
+          console.warn('Could not parse image annotation', err);
+        }
+      } else if (typeof img.image_annotation === 'object' && img.image_annotation !== null) {
+        annotation = img.image_annotation;
+      }
+
+      const title = annotation.ship_name || annotation.caption || annotation.image_type || `Image ${idx + 1}`;
+      const subtitle = annotation.pennant_number ? `Pennant: ${annotation.pennant_number}` : (annotation.image_type || '');
+      const description = annotation.description || '';
+
+      // Create image element
+      const imageCard = document.createElement('div');
+      imageCard.className = 'inline-image';
+      
+      const imageElement = document.createElement('img');
+      imageElement.src = imageDataUri; // Use base64 data URI directly
+      imageElement.alt = title;
+      imageCard.appendChild(imageElement);
+
+      const meta = document.createElement('div');
+      meta.className = 'image-meta';
+
+      const titleEl = document.createElement('h3');
+      titleEl.textContent = title;
+      meta.appendChild(titleEl);
+
+      if (subtitle) {
+        const subtitleEl = document.createElement('p');
+        subtitleEl.textContent = subtitle;
+        meta.appendChild(subtitleEl);
+      }
+
+      if (description) {
+        const descEl = document.createElement('p');
+        descEl.textContent = description;
+        meta.appendChild(descEl);
+      }
+
+      imageCard.appendChild(meta);
+      return imageCard;
+    }
+
+    function renderPage(index) {
+      if (index < 0 || index >= pages.length) {
+        return;
+      }
+
+      currentIndex = index;
+      const page = pages[index];
+
+      document.querySelectorAll('#page-list button').forEach(btn => btn.classList.remove('active'));
+      const activeBtn = document.querySelector(`#page-list button[data-index="${index}"]`);
+      if (activeBtn) {
+        activeBtn.classList.add('active');
+      }
+
+      const pageNumber = page.index != null ? page.index + 1 : index + 1;
+      const dims = page.dimensions;
+      const dimsText = dims ? `Dimensions: ${dims.width}×${dims.height}${dims.dpi ? ` · ${dims.dpi} dpi` : ''}` : '';
+      headerEl.innerHTML = `<h2>Page ${pageNumber}</h2>${dimsText ? `<p class="meta">${dimsText}</p>` : ''}`;
+
+      const markdown = page.markdown || '';
+      const images = Array.isArray(page.images) ? page.images : [];
+
+      // Use images in JSON order (ground truth) - don't sort!
+      // Prefer images with base64 data, fallback to file_path
+      const imagesInOrder = images.filter(img => img.image_base64 || img.image_file_path);
+
+      // Use Unicode private use area characters as placeholders (won't be escaped)
+      const mathExpressions = [];
+      
+      let processedMarkdown = markdown;
+      processedMarkdown = processedMarkdown.replace(/\\$([^$\\n]+?)\\$/g, (match, content) => {
+        // Skip if it looks like a currency amount
+        if (/^\\d+\\.?\\d*\\s*$/.test(content.trim())) {
+          return match;
+        }
+        const id = mathExpressions.length;
+        mathExpressions.push(match);
+        // Use Unicode private use area - these won't be HTML-escaped
+        return String.fromCharCode(0xE000 + id);
+      });
+      
+      // Configure marked
+      marked.setOptions({
+        breaks: true,
+        gfm: true,
+        sanitize: false
+      });
+      
+      // Render markdown
+      markdownEl.innerHTML = processedMarkdown ? marked.parse(processedMarkdown) : '<p class="placeholder">No markdown content available for this page.</p>';
+      
+      // Replace Unicode placeholders with actual math expressions
+      let html = markdownEl.innerHTML;
+      mathExpressions.forEach((mathExpr, index) => {
+        const placeholder = String.fromCharCode(0xE000 + index);
+        // Replace all occurrences
+        while (html.includes(placeholder)) {
+          html = html.replace(placeholder, mathExpr);
+        }
+      });
+      markdownEl.innerHTML = html;
+
+      // Find all <img> tags created by marked.js and replace them with image cards
+      // The src attribute will be like "img-0.jpeg", "img-1.jpeg", etc.
+      // Note: Image indices in markdown are global (img-0, img-1, ..., img-4, img-5, ...)
+      // but each page's images array starts at index 0, so we need to find the offset
+      
+      // First, find all image references in the markdown to determine the offset
+      const imageRefs = [];
+      const imgRefRegex = /img-(\\d+)/g;
+      let match;
+      while ((match = imgRefRegex.exec(markdown)) !== null) {
+        imageRefs.push(parseInt(match[1], 10));
+      }
+      
+      // Calculate offset: minimum image index in this page's markdown
+      const offset = imageRefs.length > 0 ? Math.min(...imageRefs) : 0;
+      
+      const imgTags = markdownEl.querySelectorAll('img');
+      imgTags.forEach((imgTag) => {
+        const src = imgTag.getAttribute('src') || '';
+        // Extract image index from filename (img-0.jpeg -> 0, img-1.jpeg -> 1, etc.)
+        const indexMatch = src.match(/img-(\\d+)/);
+        if (indexMatch) {
+          const globalImgIndex = parseInt(indexMatch[1], 10);
+          // Convert global index to local page index
+          const localImgIndex = globalImgIndex - offset;
+          
+          // Get the corresponding image from this page's images array
+          if (localImgIndex >= 0 && localImgIndex < imagesInOrder.length) {
+            const img = imagesInOrder[localImgIndex];
+            const imageCard = createImageCard(img, localImgIndex);
+            if (imageCard) {
+              // Replace the <img> tag with the image card
+              imgTag.parentNode.replaceChild(imageCard, imgTag);
+            }
+          } else {
+            console.warn(`Image index mismatch: global=${globalImgIndex}, local=${localImgIndex}, available=${imagesInOrder.length}`);
+          }
+        }
+      });
+
+      // If no images were found/inserted, render math and we're done
+      if (imagesInOrder.length === 0) {
+        if (window.MathJax && window.MathJax.typesetPromise) {
+          window.MathJax.typesetPromise([markdownEl]).catch((err) => {
+            console.warn('MathJax rendering error:', err);
+          });
+        }
+        return;
+      }
+
+      // Images have been inserted at their markdown reference positions
+      // No need for additional placement logic
+
+      // Add full page image at the end if available
+      const pageImage = page.page_image_base64 || page.page_image || page.full_page_image;
+      if (pageImage) {
+        console.log(`Adding page image for page ${pageNumber}`);
+        const pageImageContainer = document.createElement('div');
+        pageImageContainer.className = 'page-image-container';
+        
+        const title = document.createElement('h3');
+        title.textContent = 'Original Page Image';
+        pageImageContainer.appendChild(title);
+        
+        const pageImg = document.createElement('img');
+        // Handle both base64 data URI and file path
+        if (typeof pageImage === 'string' && pageImage.startsWith('data:')) {
+          pageImg.src = pageImage;
+        } else if (typeof pageImage === 'string') {
+          // File path
+          pageImg.src = pageImage.startsWith('output/') 
+            ? pageImage.replace(/^output\\//, '') 
+            : pageImage;
+        }
+        pageImg.alt = `Page ${pageNumber} - Original PDF page`;
+        pageImg.style.width = '100%';
+        pageImg.style.maxWidth = '100%';
+        
+        pageImageContainer.appendChild(pageImg);
+        markdownEl.appendChild(pageImageContainer);
+      }
+
+      // Render math notation with MathJax after DOM is ready
+      // Wait for MathJax to be fully loaded
+      const renderMath = () => {
+        if (window.MathJax && window.MathJax.typesetPromise) {
+          window.MathJax.typesetPromise([markdownEl]).then(() => {
+            console.log('MathJax rendering completed');
+          }).catch((err) => {
+            console.warn('MathJax rendering error:', err);
+          });
+        } else if (window.MathJax && window.MathJax.typeset) {
+          // Fallback for older MathJax API
+          window.MathJax.typeset([markdownEl]);
+        } else {
+          // MathJax not loaded yet, wait a bit more
+          setTimeout(renderMath, 100);
+        }
+      };
+      
+      // Start rendering math after a short delay to ensure DOM is ready
+      setTimeout(renderMath, 200);
+    }
+
+    function buildPageList() {
+      pageListEl.innerHTML = '';
+      const frag = document.createDocumentFragment();
+
+      pages.forEach((page, index) => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.dataset.index = index;
+        const pageNumber = page.index != null ? page.index + 1 : index + 1;
+        const title = derivePageTitle(page, `Page ${pageNumber}`);
+        btn.textContent = title;
+        btn.addEventListener('click', () => renderPage(index));
+        const li = document.createElement('li');
+        li.appendChild(btn);
+        frag.appendChild(li);
+      });
+
+      pageListEl.appendChild(frag);
+      if (pages.length) {
+        renderPage(0);
+      }
+    }
+
+    // Load JSON data file
+    function loadData() {
+      fetch(encodeURI(DATA_FILE))
+        .then((response) => {
+          if (!response.ok) {
+            throw new Error(`Failed to load data: ${response.status}`);
+          }
+          return response.json();
+        })
+        .then((data) => {
+          pages = Array.isArray(data.pages) ? data.pages : [];
+          if (!pages.length) {
+            headerEl.innerHTML = '<h2>No pages found</h2><p class="placeholder">The JSON file does not contain any pages.</p>';
+            return;
+          }
+          buildPageList();
+        })
+        .catch((error) => {
+          console.error(error);
+          headerEl.innerHTML = '<h2>Unable to load document</h2><p class="placeholder">JSON file not found. Please process a PDF first using mistral_ocr.py to generate the annotations JSON file.</p>';
+        });
+    }
+    
+    loadData();
+  </script>
+</body>
+</html>'''
+    
+    # Replace placeholder with actual JSON filename
+    viewer_html = viewer_template.replace('{json_filename}', json_filename)
+    
+    # Save viewer.html
+    ensure_dir(output_dir)
+    viewer_path = os.path.join(output_dir, 'viewer.html')
+    
+    with open(viewer_path, 'w', encoding='utf-8') as f:
+        f.write(viewer_html)
+    
+    logger.info(f"Generated viewer.html at {viewer_path}")
+    return viewer_path
+
+
 def process_pdf_with_mistral(pdf_path: str, mistral_client: Optional[Mistral] = None) -> Dict[str, Any]:
     """
     Process PDF using Mistral Document AI OCR
@@ -1030,26 +1688,34 @@ def process_pdf(pdf_path: str, mistral_client: Optional[Mistral] = None) -> str:
     
     logger.info(f"Saved annotations to {output_path}")
     
-    # Also save raw result for debugging
-    raw_path = os.path.join(OUTPUT_DIR, f"{base_name}_raw.json")
-    try:
-        if hasattr(mistral_result, '__dict__'):
-            raw_dict = mistral_result.__dict__
-        elif hasattr(mistral_result, 'model_dump'):
-            raw_dict = mistral_result.model_dump()
-        elif isinstance(mistral_result, dict):
-            raw_dict = mistral_result
-        else:
-            raw_dict = {"result": str(mistral_result)}
-        
-        with open(raw_path, "w", encoding="utf-8") as f:
-            json.dump(raw_dict, f, indent=2, ensure_ascii=False, default=str)
-        
-        logger.info(f"Saved raw result to {raw_path}")
-    except Exception as e:
-        logger.warning(f"Could not save raw result: {e}")
+    # Add full page images to JSON
+    logger.info("Adding full page images to JSON...")
+    add_page_images_to_json(output_path, pdf_path)
     
-    return output_path
+    # Generate viewer.html with correct JSON filename
+    json_filename = os.path.basename(output_path)
+    viewer_path = generate_viewer_html(json_filename, OUTPUT_DIR)
+    
+    # Also save raw result for debugging (optional, can be disabled)
+    # raw_path = os.path.join(OUTPUT_DIR, f"{base_name}_raw.json")
+    # try:
+    #     if hasattr(mistral_result, '__dict__'):
+    #         raw_dict = mistral_result.__dict__
+    #     elif hasattr(mistral_result, 'model_dump'):
+    #         raw_dict = mistral_result.model_dump()
+    #     elif isinstance(mistral_result, dict):
+    #         raw_dict = mistral_result
+    #     else:
+    #         raw_dict = {"result": str(mistral_result)}
+    #     
+    #     with open(raw_path, "w", encoding="utf-8") as f:
+    #         json.dump(raw_dict, f, indent=2, ensure_ascii=False, default=str)
+    #     
+    #     logger.info(f"Saved raw result to {raw_path}")
+    # except Exception as e:
+    #     logger.warning(f"Could not save raw result: {e}")
+    
+    return output_path, viewer_path
 
 
 # ---- CLI ----
@@ -1085,12 +1751,21 @@ if __name__ == "__main__":
     
     try:
         result = process_pdf(args.pdf, mistral_client)
+        json_path, viewer_path = result if isinstance(result, tuple) else (result, None)
+        
         print(f"\n✓ OCR processing with annotations completed successfully!")
-        print(f"Annotations saved to: {result}")
+        print(f"Annotations saved to: {json_path}")
+        if viewer_path:
+            print(f"Viewer HTML generated: {viewer_path}")
+            print(f"\nTo view the document:")
+            print(f"  1. cd {OUTPUT_DIR}")
+            print(f"  2. python -m http.server 8000")
+            print(f"  3. Open http://localhost:8000/viewer.html in your browser")
         print(f"\nThe output contains:")
         print(f"  - document_annotation: Structured ship data extracted from the page")
         print(f"  - bbox_annotations: Annotated figures/images")
         print(f"  - full_text: Extracted text from the document")
+        print(f"  - page_image_base64: Full page images embedded in JSON")
     except Exception as e:
         logger.error(f"Failed to process PDF: {e}")
         raise
