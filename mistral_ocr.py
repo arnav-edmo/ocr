@@ -417,13 +417,13 @@ def generate_viewer_html(json_filename: str, output_dir: str = OUTPUT_DIR) -> st
     }
 
     .inline-image {
-      margin: 24px 0;
+      margin: 24px auto;
       background: #fff;
       border-radius: 12px;
       box-shadow: 0 8px 16px rgba(15, 23, 42, 0.08);
       overflow: hidden;
       border: 1px solid rgba(15, 23, 42, 0.08);
-      max-width: 100%;
+      max-width: 60%;
     }
 
     .inline-image img {
@@ -461,8 +461,11 @@ def generate_viewer_html(json_filename: str, output_dir: str = OUTPUT_DIR) -> st
     }
 
     .page-image-container img {
-      max-width: 100%;
+      max-width: 60%;
+      width: 60%;
       height: auto;
+      margin: 0 auto;
+      display: block;
       border: 1px solid rgba(15, 23, 42, 0.1);
       border-radius: 8px;
       box-shadow: 0 4px 12px rgba(15, 23, 42, 0.1);
@@ -498,6 +501,15 @@ def generate_viewer_html(json_filename: str, output_dir: str = OUTPUT_DIR) -> st
 
       main {
         padding: 24px 20px;
+      }
+
+      .inline-image {
+        max-width: 100%;
+      }
+
+      .page-image-container img {
+        max-width: 100%;
+        width: 100%;
       }
     }
   </style>
@@ -752,8 +764,10 @@ def generate_viewer_html(json_filename: str, output_dir: str = OUTPUT_DIR) -> st
           pageImg.src = pageImage;
         }
         pageImg.alt = `Page ${pageNumber} - Original PDF page`;
-        pageImg.style.width = '100%';
-        pageImg.style.maxWidth = '100%';
+        pageImg.style.width = '60%';
+        pageImg.style.maxWidth = '60%';
+        pageImg.style.margin = '0 auto';
+        pageImg.style.display = 'block';
         
         pageImageContainer.appendChild(pageImg);
         markdownEl.appendChild(pageImageContainer);
